@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 import urllib.parse
 from pymongo import MongoClient
 from datetime import datetime, timedelta
+from telegram import CallbackQuery
+
 
 # Add this at the top of the file
 VERIFICATION_REQUIRED = os.getenv('VERIFICATION_REQUIRED', 'true').lower() == 'true'
@@ -30,8 +32,12 @@ admin_ids = [6025969005, 6018060368]
 # MongoDB connection
 MONGO_URI = os.getenv('MONGO_URI')  # Get MongoDB URI from environment variables
 client = MongoClient(MONGO_URI)
-db = client['xh_bot'] # Updated database name
+db = client['xh_bot']  # Updated database name
 users_collection = db['users']
+
+# Referral points reward
+REFERRAL_POINTS = 25
+PREMIUM_POINTS = 50
 
 # Configure logging
 logging.basicConfig(
@@ -40,61 +46,168 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Function to generate a unique referral code
+def generate_referral_code(user_id):
+    return f"{user_id}_{uuid.uuid4().hex[:6]}"
+
+# Function to award premium access (skip verification)
+# Function to award premium access (skip verification)
+async def award_premium_access(user_id, query: CallbackQuery, context: CallbackContext):
+    users_collection.update_one(
+        {"user_id": user_id},
+        {"$set": {"verified_until": datetime.now() + timedelta(days=1)}},
+        upsert=True
+    )
+    await query.message.reply_text(
+        "🎉 **Premium Access Unlocked!**\n\n"
+        "You have earned premium access and can use the bot without verification for the next 24 hours.",
+        parse_mode='Markdown'
+    )
+
+
 # Define the /start command handler
 async def start(update: Update, context: CallbackContext) -> None:
     logger.info("Received /start command")
     user = update.effective_user
+    user_id = user.id
 
-    # Check if the start command includes a token (for verification)
-    if context.args:
-        token = context.args[0]
-        user_data = users_collection.find_one({"user_id": user.id, "token": token})
+    # Check if the user exists in the database
+    existing_user = users_collection.find_one({"user_id": user_id})
 
-        if user_data:
-            # Update the user's verification status
+    # If the user is new, create a new entry
+    if not existing_user:
+        # Create a new user entry
+        new_user_data = {
+            "user_id": user_id,
+            "username": user.username,
+            "full_name": user.full_name,
+            "referral_code": generate_referral_code(user_id),
+            "referred_by": None,
+            "referral_points": 0,
+            "verified_until": datetime.min
+        }
+        users_collection.insert_one(new_user_data)
+
+        # Check if the start command includes a referral code
+        if context.args:
+            referral_code = context.args[0]
+            referrer = users_collection.find_one({"referral_code": referral_code})
+
+            if referrer:
+                referrer_id = referrer['user_id']
+                # Update the referred user's document with the referrer's ID
+                users_collection.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"referred_by": referrer_id}}
+                )
+
+                # Increment the referrer's referral points
+                users_collection.update_one(
+                    {"user_id": referrer_id},
+                    {"$inc": {"referral_points": REFERRAL_POINTS}}
+                )
+
+                # Send a message to the referrer
+                try:
+                    await context.bot.send_message(
+                        chat_id=referrer_id,
+                        text=(
+                            "🎉 You successfully completed 1 referral and earned "
+                            f"{REFERRAL_POINTS} points! Check your points using /points command."
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending referral notification to user {referrer_id}: {e}")
+            else:
+                await update.message.reply_text("Invalid referral code.")
+                return
+
+        # Send the welcome message and store user ID in MongoDB
+        message = (
+            f"New user started the bot:\n"
+            f"Name: {user.full_name}\n"
+            f"Username: @{user.username}\n"
+            f"User     ID: {user.id}"
+        )
+        await context.bot.send_message(chat_id=CHANNEL_ID, text=message)
+
+    else:
+        # Ensure referral_code exists for existing users (migration)
+        if "referral_code" not in existing_user:
             users_collection.update_one(
-                {"user_id": user.id},
-                {"$set": {"verified_until": datetime.now() + timedelta(days=1)}},
-                upsert=True
+                {"user_id": user_id},
+                {"$set": {"referral_code": generate_referral_code(user_id)}}
             )
-            await update.message.reply_text(
-                "✅ **Verification Successful!**\n\n"
-                "You can now use the bot for the next 24 hours without any restrictions.",
-                parse_mode='Markdown'
-            )
-        else:
-            await update.message.reply_text(
-                "❌ **Invalid Token!**\n\n"
-                "Please try verifying again.",
-                parse_mode='Markdown'
-            )
-        return
 
-    # If no token, send the welcome message and store user ID in MongoDB
+    # Update user information in the database
     users_collection.update_one(
-        {"user_id": user.id},
+        {"user_id": user_id},
         {"$set": {"username": user.username, "full_name": user.full_name}},
         upsert=True
     )
-    message = (
-        f"New user started the bot:\n"
-        f"Name: {user.full_name}\n"
-        f"Username: @{user.username}\n"
-        f"User   ID: {user.id}"
-    )
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=message)
+
+    # Send the welcome message
     start_message = await update.message.reply_photo(
         photo='https://ik.imagekit.io/dvnhxw9vq/bot_pic.jpeg?updatedAt=1741960637889',  # Replace with your image URL
         caption=(
             "🔥 Welcome My Friend 🔥\n\n"
             "🔞 Your ultimate destination for exclusive adult content!\n\n💦 What You Get Here:\n✅ HD Exclusive Videos\n✅ Daily Hot Updates 🔥\n✅ Private & Premium Content 💎\n✅ Exclusive Requests 📝\n\n"
             "🚀 Start Exploring Now!\n\n"
-            "👉 Send /start to Start\n👉 Use /video for Get Video\n👉 You Can Also Search Video To Sending A Message To Bot\n\n🔥 Popular Search 🔥\n👉 `Russian`\n👉 `Hot Girls`\n👉 `DBSM`\n👉 `Sex Videos`"
+            "👉 Send /start to Start\n👉 Use /video for Get Video\n👉 You Can Also Search Video To Sending A Message To Bot\n\n🔥 Popular Search 🔥\n👉 `Russian`\n👉 `Hot Girls`\n👉 `DBSM`\n👉 `Sex Videos`\n\n"
+            "📌 Reffer The Bot Link Unlock All Bot Primium Feature\n"
+            "📌 Use /reffer Command To Know More\n\n"
         ),
-        parse_mode='Markdown'
     )
     # Do not schedule deletion for the /start message
-    # asyncio.create_task(delete_message_after_delay(start_message))
+
+"""async def referral_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    user_id = user.id
+
+    existing_user = users_collection.find_one({"user_id": user_id})
+
+    if not existing_user:
+        await update.message.reply_text("You need to start the bot first using /start.")
+        return
+
+    referral_link = f"https://t.me/{context.bot.username}?start={existing_user['referral_code']}"
+    await update.message.reply_text(
+        f"Your referral link: {referral_link}\n\n"
+        "Share this link with your friends to earn rewards!"
+    )"""
+
+async def referral_command(update: Update, context: CallbackContext) -> None:
+    # Check if the call is from a callback query or a command
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()  # Acknowledge the callback query
+        user = query.from_user  # Get user from the callback query
+    else:
+        user = update.effective_user  # Get user from the command
+
+    user_id = user.id
+
+    existing_user = users_collection.find_one({"user_id": user_id})
+
+    if not existing_user:
+        message_text = "You need to start the bot first using /start."
+        if update.callback_query:
+            await query.message.reply_text(message_text)
+        else:
+            await update.message.reply_text(message_text)
+        return
+
+    referral_link = f"https://t.me/{context.bot.username}?start={existing_user['referral_code']}"
+
+    message_text = (
+        f"Your referral link:\n{referral_link}\n\n"
+        "Share this link with your friends to earn rewards!\n\nGet 25 Points Per Complete reffer\nYou Need 50 Points To Unlock (Skip) One Verification\n\nShare And Use All Bot Primium Feature Without Ads Or Verify"
+    )
+
+    if update.callback_query:
+        await query.message.reply_text(message_text)
+    else:
+        await update.message.reply_text(message_text)
 
 async def check_verification(user_id: int) -> bool:
     user = users_collection.find_one({"user_id": user_id})
@@ -114,9 +227,6 @@ async def get_token(user_id: int, bot_username: str) -> str:
     # Create verification link
     verification_link = f"https://telegram.me/{bot_username}?start={token}"
     # Shorten verification link using shorten_url_link function
-    #shortened_link = shorten_url_link(verification_link) # Removed shorten_url_link as it's not defined
-    # return verification_link # Return the full verification link
-    # Shorten verification link using shorten_url_link function
     shortened_link = shorten_url_link(verification_link)
     return shortened_link
 
@@ -127,7 +237,6 @@ def shorten_url_link(url):
         'api': api_key,
         'url': url
     }
-    # Yahan pe custom certificate bundle ka path specify karo
     response = requests.get(api_url, params=params, verify=False)
     if response.status_code == 200:
         data = response.json()
@@ -175,12 +284,11 @@ async def send_search_results(update: Update, context: CallbackContext):
 
         callback_data = f"watch_{url_id}" # Callback data is now the unique ID
         
-
         try:
             sent_message = await context.bot.send_photo(
                 chat_id=update.effective_chat.id,
                 photo=image_url,
-                caption=f"Video {start + index + 1}: [Watch Video]", # Removed callback data from caption
+                caption=f"Video {start + index + 1}: [Click On Watch]", # Removed callback data from caption
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("Watch", callback_data=callback_data)]
@@ -211,10 +319,6 @@ async def send_search_results(update: Update, context: CallbackContext):
             except AttributeError as e:
                 logger.error(f"Error sending 'More results' message: {e}")
                 return # Exit the function if the message cannot be sent
-        
-        # Schedule the deletion of the message after 120 seconds without blocking
-        #asyncio.create_task(delete_message_after_delay(del_msg))
-
 
 async def handle_button_click(update: Update, context: CallbackContext):
     query = update.callback_query
@@ -256,7 +360,6 @@ async def handle_button_click(update: Update, context: CallbackContext):
         url = context.user_data.get(query.data)
         if url:
             await filmyfly_download_linkmake_view(url, update)
-
 
 async def delete_message_after_delay(message):
     await asyncio.sleep(300)  # 5 minutes = 300 seconds
@@ -355,7 +458,7 @@ async def xh_scrape_m3u8_links(url, update: Update, context: CallbackContext):
             reply_markup = InlineKeyboardMarkup(buttons)
             effective_message = update.effective_message
             if effective_message:
-                stream_message = await effective_message.reply_text("Found m3u8 links:", reply_markup=reply_markup)
+                stream_message = await effective_message.reply_text("Your Stream Link", reply_markup=reply_markup)
                 asyncio.create_task(delete_message_after_delay(stream_message))
             else:
                 logger.error("No message or callback_query.message in xh_scrape_m3u8_links")
@@ -393,7 +496,8 @@ async def xh_scrap_video_home(update: Update, context: CallbackContext):
             # User ko verify karne ki zaroorat hai
             btn = [
                 [InlineKeyboardButton("Verify", url=await get_token(user.id, context.bot.username))],
-                [InlineKeyboardButton("How To Open Link & Verify", url="https://t.me/how_to_download_0011")]
+                [InlineKeyboardButton("How To Open Link & Verify", url="https://t.me/how_to_download_0011")],
+                [InlineKeyboardButton("Reffer To Skip Verify", callback_data="reffer")]  # Corrected Referral Button
             ]
             await update.message.reply_text(
                 text="🚨 <b>Token Expired!</b>\n\n"
@@ -402,6 +506,7 @@ async def xh_scrap_video_home(update: Update, context: CallbackContext):
                      "<b>🔑 Why Tokens?</b>\n\n"
                      "Tokens unlock premium features with a quick ad process. Enjoy 24 hours of uninterrupted access! 🌟\n\n"
                      "<b>👉 Tap below to verify your token.</b>\n\n"
+                     "/reffer Bot Link To skip The Verification And Unlock Bot Primium Without Watching Ads\nCheck More About It Send /reffer Command\n\n"
                      "Thank you for your support! ❤️",
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(btn)
@@ -418,8 +523,6 @@ async def xh_scrap_video_home(update: Update, context: CallbackContext):
         asyncio.create_task(delete_message_after_delay(no_query_message))
         return
 
-    #filmyfly_domain = redirection_domain_get("https://xhamster43.desi/")
-    #filmyfly_final = f"{filmyfly_domain}site-1.html?to-search={xh_home_scrap_query}"
     xh_search_query = f"https://xhamster43.desi/search/{xh_user_query}"
     await Xhamster_scrap_get_link_thumb(xh_search_query, update, context, searching_message.message_id)
 
@@ -435,7 +538,8 @@ async def video_command(update: Update, context: CallbackContext):
             # User ko verify karne ki zaroorat hai
             btn = [
                 [InlineKeyboardButton("Verify", url=await get_token(user.id, context.bot.username))],
-                [InlineKeyboardButton("How To Open Link & Verify", url="https://t.me/how_to_download_0011")]
+                [InlineKeyboardButton("How To Open Link & Verify", url="https://t.me/how_to_download_0011")],
+                [InlineKeyboardButton("Reffer To Skip Verify", callback_data="reffer")]  # Corrected Referral Button
             ]
             await update.message.reply_text(
                 text="🚨 <b>Token Expired!</b>\n\n"
@@ -444,6 +548,7 @@ async def video_command(update: Update, context: CallbackContext):
                      "<b>🔑 Why Tokens?</b>\n\n"
                      "Tokens unlock premium features with a quick ad process. Enjoy 24 hours of uninterrupted access! 🌟\n\n"
                      "<b>👉 Tap below to verify your token.</b>\n\n"
+                     "/reffer Bot Link To skip The Verification And Unlock Bot Primium Without Watching Ads\nCheck More About It Send /reffer Command\n\n"
                      "Thank you for your support! ❤️",
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup(btn)
@@ -461,14 +566,79 @@ async def video_command(update: Update, context: CallbackContext):
     xh_home_crap_domain = "https://xhamster43.desi/"
     await Xhamster_scrap_get_link_thumb(xh_home_crap_domain, update, context, searching_message.message_id)
 
+async def points_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    user_id = user.id
+
+    existing_user = users_collection.find_one({"user_id": user_id})
+
+    if not existing_user:
+        await update.message.reply_text("You need to start the bot first using /start.")
+        return
+
+    referral_points = existing_user.get("referral_points", 0)
+
+    # Add unlock button if user has enough points
+    if referral_points >= PREMIUM_POINTS:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Unlock Premium", callback_data="unlock_premium")]])
+        await update.message.reply_text(f"Your referral points: {referral_points}\nYou have enough points to unlock premium access! Click the button below to unlock.", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(f"Your referral points: {referral_points}\n\nGet 25 Points Per Complete reffer\nYou Need 50 Points To Unlock (Skip) One Verification\n\nShare More And Earn More Points To Unlock bot Primium Without Verify")
+
+async def unlock_premium(update: Update, context: CallbackContext) -> None:
+    # Check if the call is from a callback query or a command
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()  # Acknowledge the callback query
+        user = query.from_user  # Get user from the callback query
+    else:
+        user = update.effective_user  # Get user from the command
+
+    user_id = user.id
+
+    existing_user = users_collection.find_one({"user_id": user_id})
+
+    if not existing_user:
+        if update.callback_query:
+            await query.message.reply_text("You need to start the bot first using /start.")
+        else:
+            await update.message.reply_text("You need to start the bot first using /start.")
+        return
+
+    referral_points = existing_user.get("referral_points", 0)
+
+    if referral_points >= PREMIUM_POINTS:
+        await award_premium_access(user_id, query if update.callback_query else None, context)  # Award premium access
+        # Reset referral points after awarding premium access
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"referral_points": 0}}
+        )
+        if update.callback_query:
+            await query.message.reply_text("Premium access unlocked! Your referral points have been reset.")
+        else:
+            await update.message.reply_text("Premium access unlocked! Your referral points have been reset.")
+    else:
+        if update.callback_query:
+            await query.message.reply_text("You don't have enough referral points to unlock premium access.\nCheck Your Points Using /points")
+        else:
+            await update.message.reply_text("You don't have enough referral points to unlock premium access.\nCheck Your Points Using /points")
+        
 def main() -> None:
     port = int(os.environ.get('PORT', 8080))
-    webhook_url = f"https://delicate-jyoti-toxicc-188b9b28.koyeb.app/{TOKEN}"
+    webhook_url = f"https://perfect-bria-tej-fded6488.koyeb.app/{TOKEN}"
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("reffer", referral_command))  # Add the new handler
+    app.add_handler(CallbackQueryHandler(referral_command, pattern="^reffer$"))  # Handle callback query for unlocking premium
     app.add_handler(CommandHandler("video", video_command))
+    app.add_handler(CommandHandler("points", points_command))  # Add the new handler
+    #app.add_handler(CommandHandler("unlock", unlock_premium))  # Command handler for /unlock
+    #app.add_handler(CallbackQueryHandler(unlock_premium, pattern="^unlock_premium$"))  # Handle callback query for unlocking premium
+    app.add_handler(CommandHandler("unlock", unlock_premium))  # Command handler for /unlock
+    app.add_handler(CallbackQueryHandler(unlock_premium, pattern="^unlock_premium$"))  # Handle callback query for unlocking premium
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, xh_scrap_video_home))
     app.add_handler(CallbackQueryHandler(handle_button_click))
 
