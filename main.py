@@ -153,9 +153,10 @@ async def start(update: Update, context: CallbackContext) -> None:
             "🔥 Welcome My Friend 🔥\n\n"
             "🔞 Your ultimate destination for exclusive adult content!\n\n💦 What You Get Here:\n✅ HD Exclusive Videos\n✅ Daily Hot Updates 🔥\n✅ Private & Premium Content 💎\n✅ Exclusive Requests 📝\n\n"
             "🚀 Start Exploring Now!\n\n"
-            "👉 Send /start to Start\n👉 Use /video for Get Video\n👉 You Can Also Search Video To Sending A Message To Bot\n\n🔥 Popular Search 🔥\n👉 `Russian`\n👉 `Hot Girls`\n👉 `DBSM`\n👉 `Sex Videos`\n\n"
+            "👉 Send /start to Start\n👉 Use /video for Get Video\n👉 You Can Also Search Video To Sending A Message To Bot\n\n"
             "📌 Reffer The Bot Link Unlock All Bot Primium Feature\n"
             "📌 Use /reffer Command To Know More\n\n"
+            "🔥 Popular Search 🔥\n👉 `Russian`\n👉 `Hot Girls`\n👉 `DBSM`\n👉 `Sex Videos`"
         ),
     )
     # Do not schedule deletion for the /start message
